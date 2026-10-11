@@ -1,53 +1,86 @@
-import os
+"""Command line entry point.
+
+    python main.py score "Apple beats estimates and raises guidance"
+    python main.py analyse --tickers AAPL TSLA --demo
+    python main.py benchmark --corpus my_labelled_headlines.csv
+"""
+
+from __future__ import annotations
+
 import argparse
 import sys
 
-from src.utils.config import DEFAULT_TICKER, START_DATE, END_DATE
-from src.data_collection.collect_stock_data import fetch_stock_data
-from src.data_collection.collect_news_yahoo import scrape_yahoo_news
-from src.models.finbert_inference import run_finbert_inference
-from src.analysis.aggregate_sentiment import aggregate_daily_sentiment
-from src.analysis.correlation_analysis import run_correlation_analysis
-from src.utils.helpers import setup_logger
+import pandas as pd
 
-logger = setup_logger("main_pipeline")
+from finsent import data, demo, index, models, predict, signals
+from finsent.config import BENCHMARK, DEFAULT_TICKERS
 
-def run_pipeline(ticker=DEFAULT_TICKER):
-    logger.info("="*50)
-    logger.info(f"STARTING PIPELINE FOR {ticker}")
-    logger.info("="*50)
-    
-    logger.info("Step 1: Data Collection")
-    stock_file = fetch_stock_data(ticker, START_DATE, END_DATE)
-    news_file = scrape_yahoo_news(ticker)
-    
-    if not stock_file or not news_file:
-        logger.error("Data collection failed. Exiting.")
-        return
-        
-    logger.info("Step 2: FinBERT Inference")
-    preds_file = run_finbert_inference(news_file)
-    if not preds_file:
-        logger.error("Inference failed. Exiting.")
-        return
-        
-    logger.info("Step 3: Sentiment Aggregation")
-    agg_file = aggregate_daily_sentiment(preds_file)
-    if not agg_file:
-        logger.error("Aggregation failed. Exiting.")
-        return
-        
-    logger.info("Step 4: Correlation Analysis")
-    final_analysis = run_correlation_analysis(stock_file, agg_file)
-    
-    logger.info("="*50)
-    logger.info(f"PIPELINE COMPLETE. Results saved to {final_analysis}")
-    logger.info(f"Run `streamlit run dashboard/app.py` to view.")
-    logger.info("="*50)
+
+def cmd_score(args):
+    eng = models.SentimentEngine.train(args.model)
+    out = eng.score(args.headlines)
+    out.insert(0, "headline", args.headlines)
+    print(out[["headline", "label", "score", "confidence"]].to_string(index=False))
+
+
+def cmd_benchmark(args):
+    corpus = data.parse_labelled_corpus(pd.read_csv(args.corpus)) if args.corpus else demo.labelled_corpus()
+    names = [m for m in models.MODEL_NAMES if m != "finbert" or models.finbert_available()]
+    res = models.benchmark(corpus, names, folds=args.folds)
+    print(f"{res['n']:,} labelled headlines, {res['folds']}-fold cross-validation\n")
+    print(res["table"].drop(columns="key").round(3).to_string(index=False))
+
+
+def cmd_analyse(args):
+    start = (pd.Timestamp.today() - pd.DateOffset(years=args.years)).normalize()
+    if args.demo:
+        prices, news = demo.market_data(args.tickers, start=start)
+    else:
+        prices = data.fetch_prices(args.tickers + [BENCHMARK], start)
+        news, errors = data.fetch_news(args.tickers)
+        for e in errors:
+            print("warning:", e, file=sys.stderr)
+    eng = models.SentimentEngine.train(args.model)
+    scored = pd.concat([news.reset_index(drop=True), eng.score(news["headline"])], axis=1)
+    merged = index.merge_returns(index.daily_index(scored, prices.index), prices, BENCHMARK)
+    for tk, g in merged.groupby("ticker"):
+        g = g.sort_values("date")
+        print(f"\n=== {tk}: {int(g['n'].sum()):,} headlines, latest sentiment index {g['index'].iloc[-1]:+.2f}")
+        ll = signals.lead_lag(g.set_index("date")["daily"].fillna(0), g.set_index("date")["ret"], 2)
+        print(ll[["lag", "corr", "p_value"]].round(3).to_string(index=False))
+        if g["next_ret"].notna().sum() >= 320:
+            print(predict.run(g, kinds=("logit",)).scores.round(3).to_string(index=False))
+    if args.out:
+        merged.to_csv(args.out, index=False)
+        print(f"\nDaily sentiment and returns saved to {args.out}")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Financial news sentiment toolkit")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    model_names = list(models.MODEL_NAMES)
+
+    s = sub.add_parser("score", help="score one or more headlines")
+    s.add_argument("headlines", nargs="+")
+    s.add_argument("--model", default="logreg", choices=model_names)
+    s.set_defaults(fn=cmd_score)
+
+    b = sub.add_parser("benchmark", help="cross-validate every classifier")
+    b.add_argument("--corpus", help="CSV with text and label columns (default: built-in demo corpus)")
+    b.add_argument("--folds", type=int, default=5)
+    b.set_defaults(fn=cmd_benchmark)
+
+    a = sub.add_parser("analyse", help="build sentiment indices and test them against prices")
+    a.add_argument("--tickers", nargs="+", default=DEFAULT_TICKERS[:3])
+    a.add_argument("--years", type=int, default=3)
+    a.add_argument("--model", default="logreg", choices=model_names)
+    a.add_argument("--demo", action="store_true", help="use simulated data instead of live feeds")
+    a.add_argument("--out", help="write the daily table to this CSV")
+    a.set_defaults(fn=cmd_analyse)
+
+    args = p.parse_args(argv)
+    args.fn(args)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ticker", type=str, default=DEFAULT_TICKER)
-    args = parser.parse_args()
-    
-    run_pipeline(args.ticker)
+    main()

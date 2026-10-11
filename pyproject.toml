@@ -1,0 +1,17 @@
+[project]
+name = "finsent"
+version = "2.0.0"
+description = "Financial news sentiment scoring, daily sentiment indices and price-signal research"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B023"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

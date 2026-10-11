@@ -1,33 +1,19 @@
-# Python virtual environments
-.venv/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Jupyter Notebook
-.ipynb_checkpoints
+.pytest_cache/
+.ruff_cache/
 
 # Environments
-.env
-.venv
-env/
+.venv/
 venv/
-ENV/
-env.bak/
-venv.bak/
+.env
 
-# Project specific
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-models/*
-!models/.gitkeep
-outputs/*
-!outputs/.gitkeep
+# Local data and trained models
+data/
+models/
+outputs/
+*.joblib
+
+# Notebooks
+.ipynb_checkpoints
